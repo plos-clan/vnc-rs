@@ -1,8 +1,7 @@
-use super::{
-    auth::{AuthHelper, AuthResult, Credentials, SecurityType},
-    connection::VncClient,
-    security::vencrypt::{VeNCryptAuth, VncStream},
-};
+use crate::client::auth::AuthHelper;
+use crate::protocol::security::vencrypt::{VeNCryptAuth, VncStream};
+use crate::protocol::security::{AuthResult, SecurityType};
+use crate::{Credentials, VncClient};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{info, trace};
 
@@ -52,8 +51,12 @@ where
                 }
                 VncState::Authenticate(mut connector) => {
                     let security_types = match &mut connector.stream {
-                        VncStream::Plain(stream) => SecurityType::read(stream, &connector.rfb_version).await?,
-                        VncStream::Tls(stream) => SecurityType::read(stream, &connector.rfb_version).await?,
+                        VncStream::Plain(stream) => {
+                            SecurityType::read(stream, &connector.rfb_version).await?
+                        }
+                        VncStream::Tls(stream) => {
+                            SecurityType::read(stream, &connector.rfb_version).await?
+                        }
                     };
 
                     assert!(!security_types.is_empty());
@@ -72,8 +75,12 @@ where
                                 // but proceeds directly to the initialization messages (Section 7.3).
                                 info!("No auth needed in vnc3.7");
                                 match &mut connector.stream {
-                                    VncStream::Plain(stream) => SecurityType::write(&SecurityType::None, stream).await?,
-                                    VncStream::Tls(stream) => SecurityType::write(&SecurityType::None, stream).await?,
+                                    VncStream::Plain(stream) => {
+                                        SecurityType::write(&SecurityType::None, stream).await?
+                                    }
+                                    VncStream::Tls(stream) => {
+                                        SecurityType::write(&SecurityType::None, stream).await?
+                                    }
                                 };
                             }
                             VncVersion::RFB38 => {
@@ -83,12 +90,12 @@ where
                                         SecurityType::write(&SecurityType::None, stream).await?;
                                         let mut ok = [0; 4];
                                         stream.read_exact(&mut ok).await?;
-                                    },
+                                    }
                                     VncStream::Tls(stream) => {
                                         SecurityType::write(&SecurityType::None, stream).await?;
                                         let mut ok = [0; 4];
                                         stream.read_exact(&mut ok).await?;
-                                    },
+                                    }
                                 }
                             }
                         }
@@ -98,32 +105,46 @@ where
                             // Handle VeNCrypt authentication (preferred)
                             if connector.rfb_version != VncVersion::RFB33 {
                                 match &mut connector.stream {
-                                    VncStream::Plain(stream) => SecurityType::write(&SecurityType::VeNCrypt, stream).await?,
-                                    VncStream::Tls(stream) => SecurityType::write(&SecurityType::VeNCrypt, stream).await?,
+                                    VncStream::Plain(stream) => {
+                                        SecurityType::write(&SecurityType::VeNCrypt, stream).await?
+                                    }
+                                    VncStream::Tls(stream) => {
+                                        SecurityType::write(&SecurityType::VeNCrypt, stream).await?
+                                    }
                                 };
                             }
-                            
+
                             // Get credentials
                             if connector.credentials.get_password().is_none() {
                                 return Err(VncError::NoPassword);
                             }
-                            
-                            let password = connector.credentials.get_password().unwrap().to_string();
-                            let username = connector.credentials.get_username().unwrap_or("").to_string();
-                            
+
+                            let password =
+                                connector.credentials.get_password().unwrap().to_string();
+                            let username = connector
+                                .credentials
+                                .get_username()
+                                .unwrap_or("")
+                                .to_string();
+
                             // Perform VeNCrypt authentication
                             let stream = connector.stream;
                             let plain_stream = match stream {
                                 VncStream::Plain(s) => s,
-                                VncStream::Tls(_) => return Err(VncError::General("Unexpected TLS stream".to_string())),
+                                VncStream::Tls(_) => {
+                                    return Err(VncError::General(
+                                        "Unexpected TLS stream".to_string(),
+                                    ))
+                                }
                             };
                             connector.stream = VeNCryptAuth::authenticate(
                                 plain_stream,
                                 "localhost",
                                 Some(username.as_ref()),
                                 Some(&password),
-                            ).await?;
-                            
+                            )
+                            .await?;
+
                             // Read SecurityResult after VeNCrypt auth
                             let result = match &mut connector.stream {
                                 VncStream::Plain(stream) => stream.read_u32().await?,
@@ -137,13 +158,13 @@ where
                                         let mut err_msg = String::new();
                                         stream.read_to_string(&mut err_msg).await?;
                                         return Err(VncError::General(err_msg));
-                                    },
+                                    }
                                     VncStream::Tls(stream) => {
                                         let _ = stream.read_u32().await?;
                                         let mut err_msg = String::new();
                                         stream.read_to_string(&mut err_msg).await?;
                                         return Err(VncError::General(err_msg));
-                                    },
+                                    }
                                 };
                             }
                         } else if security_types.contains(&SecurityType::VncAuth) {
@@ -162,11 +183,15 @@ where
                                 // means that the connection has failed and is followed by a string
                                 // giving the reason, as described in Section 7.1.2.
                                 match &mut connector.stream {
-                                    VncStream::Plain(stream) => SecurityType::write(&SecurityType::VncAuth, stream).await?,
-                                    VncStream::Tls(stream) => SecurityType::write(&SecurityType::VncAuth, stream).await?,
+                                    VncStream::Plain(stream) => {
+                                        SecurityType::write(&SecurityType::VncAuth, stream).await?
+                                    }
+                                    VncStream::Tls(stream) => {
+                                        SecurityType::write(&SecurityType::VncAuth, stream).await?
+                                    }
                                 };
                             }
-                            
+
                             // get credentials
                             if connector.credentials.get_password().is_none() {
                                 return Err(VncError::NoPassword);
@@ -177,7 +202,7 @@ where
                             // auth
                             match &mut connector.stream {
                                 VncStream::Plain(stream) => {
-                                    let auth = AuthHelper::read(stream, &password).await?;
+                                    let auth = AuthHelper::read(stream, password).await?;
                                     auth.write(stream).await?;
                                     let result = auth.finish(stream).await?;
                                     if let AuthResult::Failed = result {
@@ -190,9 +215,9 @@ where
                                             return Err(VncError::General(err_msg));
                                         }
                                     }
-                                },
+                                }
                                 VncStream::Tls(stream) => {
-                                    let auth = AuthHelper::read(stream, &password).await?;
+                                    let auth = AuthHelper::read(stream, password).await?;
                                     auth.write(stream).await?;
                                     let result = auth.finish(stream).await?;
                                     if let AuthResult::Failed = result {
@@ -205,7 +230,7 @@ where
                                             return Err(VncError::General(err_msg));
                                         }
                                     }
-                                },
+                                }
                             };
                         } else {
                             let msg = "Security type apart from Vnc Auth and VeNCrypt has not been implemented";
@@ -214,22 +239,26 @@ where
                     }
                     info!("Auth done, client connected");
 
-                    return Ok(VncState::Connected(
-                        match connector.stream {
-                            VncStream::Plain(stream) => VncClient::new(
+                    return Ok(VncState::Connected(match connector.stream {
+                        VncStream::Plain(stream) => {
+                            VncClient::new(
                                 stream,
                                 connector.allow_shared,
                                 connector.pixel_format,
                                 connector.encodings,
-                            ).await?,
-                            VncStream::Tls(stream) => VncClient::new(
-                                stream,
-                                connector.allow_shared,
-                                connector.pixel_format,
-                                connector.encodings,
-                            ).await?,
+                            )
+                            .await?
                         }
-                    ));
+                        VncStream::Tls(stream) => {
+                            VncClient::new(
+                                stream,
+                                connector.allow_shared,
+                                connector.pixel_format,
+                                connector.encodings,
+                            )
+                            .await?
+                        }
+                    }));
                 }
                 VncState::Connected(_) => {
                     return Ok(self);
@@ -276,7 +305,7 @@ where
     /// async fn main() -> Result<(), VncError> {
     ///     let tcp = TcpStream::connect("127.0.0.1:5900").await?;
     ///     let vnc = VncConnector::new(tcp)
-    ///         .set_credentials(vnc::Credentials::password("password".to_string()))
+    ///         .set_credentials(vnc::Credentials::new(None, Some("password".to_string())))
     ///         .add_encoding(vnc::VncEncoding::Tight)
     ///         .add_encoding(vnc::VncEncoding::Zrle)
     ///         .add_encoding(vnc::VncEncoding::CopyRect)
@@ -305,7 +334,7 @@ where
     /// Set credentials for VNC authentication
     ///
     /// ```no_compile
-    ///         .set_credentials(Credentials::password("password".to_string()))
+    ///         .set_credentials(Credentials::new(None, Some("password".to_string())))
     /// ```
     ///
     /// For username and password authentication:

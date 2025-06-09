@@ -1,24 +1,60 @@
 use crate::VncError;
-use rustls::{ClientConfig, ServerName, Certificate, Error as TlsError};
-use rustls::client::{ServerCertVerifier, ServerCertVerified};
+use rustls::{ClientConfig, Error as TlsError, SignatureScheme};
+use rustls::pki_types::{ServerName, CertificateDer, UnixTime};
+use rustls::client::danger::{ServerCertVerifier, ServerCertVerified};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_rustls::{TlsConnector, client::TlsStream as ClientTlsStream};
 
-/// A certificate verifier that accepts all certificates (for VNC self-signed certs)
+#[derive(Debug)]
 struct AcceptAllVerifier;
 
 impl ServerCertVerifier for AcceptAllVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
+        _end_entity: &CertificateDer,
+        _intermediates: &[CertificateDer],
         _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
+        _now: UnixTime,
     ) -> Result<ServerCertVerified, TlsError> {
         Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, TlsError> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, TlsError> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA1,
+            SignatureScheme::ECDSA_SHA1_Legacy,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+            SignatureScheme::ED448,
+        ]
     }
 }
 use tracing::{debug, info, trace};
@@ -55,7 +91,7 @@ impl TryFrom<u32> for VeNCryptSubtype {
             262 => Ok(VeNCryptSubtype::X509Plain),
             263 => Ok(VeNCryptSubtype::TlsSasl),
             264 => Ok(VeNCryptSubtype::X509Sasl),
-            _ => Err(VncError::General(format!("Unsupported VeNCrypt subtype: {}", value))),
+            _ => Err(VncError::General(format!("Unsupported VeNCrypt subtype: {value}"))),
         }
     }
 }
@@ -94,7 +130,7 @@ impl VeNCryptSubtype {
 /// Wrapper for either a plain stream or TLS stream
 pub enum VncStream<S> {
     Plain(S),
-    Tls(ClientTlsStream<S>),
+    Tls(Box<ClientTlsStream<S>>),
 }
 
 impl<S> AsyncRead for VncStream<S>
@@ -169,8 +205,7 @@ impl VeNCryptAuth {
         // We only support version 0.2
         if server_major != 0 || server_minor < 2 {
             return Err(VncError::General(format!(
-                "Unsupported VeNCrypt version {}.{}, we require 0.2+",
-                server_major, server_minor
+                "Unsupported VeNCrypt version {server_major}.{server_minor}, we require 0.2+"
             )));
         }
 
@@ -232,15 +267,16 @@ impl VeNCryptAuth {
             .copied()
             .ok_or_else(|| {
                 VncError::General(format!(
-                    "No compatible VeNCrypt subtype found. Server supports: {:?}",
-                    supported_subtypes
+                    "No compatible VeNCrypt subtype found. Server supports: {supported_subtypes:?}"
                 ))
             })?;
 
         info!("Selected VeNCrypt subtype: {:?}", selected_subtype);
 
         // Send selected subtype to server
-        stream.write_u32(selected_subtype.into()).await?;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&u32::from(selected_subtype).to_be_bytes());
+        stream.write_all(&payload).await?;
 
         // Read server's acknowledgment
         let ack = stream.read_u8().await?;
@@ -266,15 +302,15 @@ impl VeNCryptAuth {
 
         // Configure TLS client with custom verifier for VNC self-signed certificates
         let config = ClientConfig::builder()
-            .with_safe_defaults()
+            .dangerous()
             .with_custom_certificate_verifier(Arc::new(AcceptAllVerifier))
             .with_no_client_auth();
 
         let connector = TlsConnector::from(Arc::new(config));
         
         // Parse server name for TLS
-        let server_name = ServerName::try_from(server_name)
-            .map_err(|e| VncError::General(format!("Invalid server name: {}", e)))?;
+        let server_name = ServerName::try_from(server_name.to_string())
+            .map_err(|e| VncError::General(format!("Invalid server name: {e}")))?;
 
         info!("Starting TLS handshake");
         
@@ -282,10 +318,10 @@ impl VeNCryptAuth {
         let tls_stream = connector
             .connect(server_name, stream)
             .await
-            .map_err(|e| VncError::General(format!("TLS handshake failed: {}", e)))?;
+            .map_err(|e| VncError::General(format!("TLS handshake failed: {e}")))?;
 
         info!("TLS handshake completed successfully");
-        Ok(VncStream::Tls(tls_stream))
+        Ok(VncStream::Tls(Box::new(tls_stream)))
     }
 
     /// Perform Plain authentication (username + password)
@@ -304,8 +340,10 @@ impl VeNCryptAuth {
         let password_bytes = password.as_bytes();
 
         // Send username length and password length
-        stream.write_u32(username_bytes.len() as u32).await?;
-        stream.write_u32(password_bytes.len() as u32).await?;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(username_bytes.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&(password_bytes.len() as u32).to_be_bytes());
+        stream.write_all(&payload).await?;
 
         // Send username and password
         stream.write_all(username_bytes).await?;
@@ -354,8 +392,7 @@ impl VeNCryptAuth {
             }
             _ => {
                 return Err(VncError::General(format!(
-                    "Authentication for subtype {:?} not implemented",
-                    subtype
+                    "Authentication for subtype {subtype:?} not implemented"
                 )));
             }
         }

@@ -2,7 +2,7 @@ use crate::{PixelFormat, Rect, VncEncoding, VncError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug)]
-pub(super) enum ClientMsg {
+pub enum ClientMsg {
     SetPixelFormat(PixelFormat),
     SetEncodings(Vec<VncEncoding>),
     FramebufferUpdateRequest(Rect, u8),
@@ -12,7 +12,7 @@ pub(super) enum ClientMsg {
 }
 
 impl ClientMsg {
-    pub(super) async fn write<S>(self, writer: &mut S) -> Result<(), VncError>
+    pub async fn write<S>(self, writer: &mut S) -> Result<(), VncError>
     where
         S: AsyncWrite + Unpin,
     {
@@ -48,7 +48,7 @@ impl ClientMsg {
                 let mut payload = vec![2, 0];
                 payload.extend_from_slice(&(encodings.len() as u16).to_be_bytes());
                 for e in encodings {
-                    payload.write_u32(e.into()).await?;
+                    payload.extend_from_slice(&u32::from(e).to_be_bytes());
                 }
                 writer.write_all(&payload).await?;
                 Ok(())
@@ -82,7 +82,7 @@ impl ClientMsg {
                 // | 4            | U32          | key          |
                 // +--------------+--------------+--------------+
                 let mut payload = vec![4, down as u8, 0, 0];
-                payload.write_u32(keycode).await?;
+                payload.extend_from_slice(&keycode.to_be_bytes());
                 writer.write_all(&payload).await?;
                 Ok(())
             }
@@ -96,8 +96,8 @@ impl ClientMsg {
                 // | 2            | U16          | y-position   |
                 // +--------------+--------------+--------------+
                 let mut payload = vec![5, mask];
-                payload.write_u16(x).await?;
-                payload.write_u16(y).await?;
+                payload.extend_from_slice(&x.to_be_bytes());
+                payload.extend_from_slice(&y.to_be_bytes());
                 writer.write_all(&payload).await?;
                 Ok(())
             }
@@ -111,7 +111,7 @@ impl ClientMsg {
                 //   | length       | U8 array     | text         |
                 //   +--------------+--------------+--------------+
                 let mut payload = vec![6_u8, 0, 0, 0];
-                payload.write_u32(s.len() as u32).await?;
+                payload.extend_from_slice(&(s.len() as u32).to_be_bytes());
                 payload.write_all(s.as_bytes()).await?;
                 writer.write_all(&payload).await?;
                 Ok(())
@@ -121,7 +121,7 @@ impl ClientMsg {
 }
 
 #[derive(Debug)]
-pub(super) enum ServerMsg {
+pub enum ServerMsg {
     FramebufferUpdate(u16),
     // SetColorMapEntries,
     Bell,
@@ -129,7 +129,7 @@ pub(super) enum ServerMsg {
 }
 
 impl ServerMsg {
-    pub(super) async fn read<S>(reader: &mut S) -> Result<Self, VncError>
+    pub async fn read<S>(reader: &mut S) -> Result<Self, VncError>
     where
         S: AsyncRead + Unpin,
     {
