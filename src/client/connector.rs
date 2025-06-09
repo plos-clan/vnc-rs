@@ -53,6 +53,11 @@ where
                     let security_types =
                         SecurityType::read(&mut connector.stream, &connector.rfb_version).await?;
 
+                    info!(
+                        "Server supported security types: {:?}",
+                        security_types
+                    );
+
                     assert!(!security_types.is_empty());
 
                     if security_types.contains(&SecurityType::None) {
@@ -129,7 +134,7 @@ where
                             }
                         }
                     }
-                    info!("auth done, client connected");
+                    info!("Auth done, client connected");
 
                     Ok(VncState::Connected(
                         VncClient::new(

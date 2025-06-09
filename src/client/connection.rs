@@ -71,7 +71,6 @@ struct VncInner {
 }
 
 /// The instance of a connected vnc client
-
 impl VncInner {
     async fn new<S>(
         mut stream: S,

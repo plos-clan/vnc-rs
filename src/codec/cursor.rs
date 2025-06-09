@@ -29,7 +29,7 @@ impl Decoder {
         let h = rect.height;
 
         let pixels_length = w as usize * h as usize * format.bits_per_pixel as usize / 8;
-        let mask_length = (w as usize + 7) / 8 * h as usize;
+        let mask_length = (w as usize).div_ceil(8) * h as usize;
 
         let _bytes = pixels_length + mask_length;
 
@@ -56,7 +56,7 @@ impl Decoder {
         }
         for y in 0..h as usize {
             for x in 0..w as usize {
-                let mask_idx = y * ((w as usize + 7) / 8) + (x / 8);
+                let mask_idx = y * (w as usize).div_ceil(8) + (x / 8);
                 let alpha = if (mask[mask_idx] << (x % 8)) & 0x80 > 0 {
                     255
                 } else {

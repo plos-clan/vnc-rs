@@ -255,7 +255,7 @@ impl Decoder {
         input.read_exact(&mut self.palette).await?;
 
         let bpp = if num_colors <= 2 { 1 } else { 8 };
-        let row_size = (rect.width as usize * bpp + 7) / 8;
+        let row_size = (rect.width as usize * bpp).div_ceil(8);
         let uncompressed_size = rect.height as usize * row_size;
 
         if uncompressed_size == 0 {

@@ -18,16 +18,27 @@ pub(super) enum SecurityType {
     GtkVncSasl = 20,
     Md5Hash = 21,
     ColinDeanXvp = 22,
+    RA2_256 = 129,
 }
 
 impl TryFrom<u8> for SecurityType {
     type Error = VncError;
     fn try_from(num: u8) -> Result<Self, Self::Error> {
         match num {
-            0 | 1 | 2 | 5 | 6 | 16 | 17 | 18 | 19 | 20 | 21 | 22 => {
-                Ok(unsafe { std::mem::transmute::<u8, SecurityType>(num) })
-            }
-            invalid => Err(VncError::InvalidSecurityTyep(invalid)),
+            0 => Ok(SecurityType::Invalid),
+            1 => Ok(SecurityType::None),
+            2 => Ok(SecurityType::VncAuth),
+            5 => Ok(SecurityType::RA2),
+            6 => Ok(SecurityType::RA2ne),
+            16 => Ok(SecurityType::Tight),
+            17 => Ok(SecurityType::Ultra),
+            18 => Ok(SecurityType::Tls),
+            19 => Ok(SecurityType::VeNCrypt),
+            20 => Ok(SecurityType::GtkVncSasl),
+            21 => Ok(SecurityType::Md5Hash),
+            22 => Ok(SecurityType::ColinDeanXvp),
+            129 => Ok(SecurityType::RA2_256),
+            invalid => Err(VncError::InvalidSecurityType(invalid)),
         }
     }
 }
@@ -99,7 +110,11 @@ pub(super) enum AuthResult {
 
 impl From<u32> for AuthResult {
     fn from(num: u32) -> Self {
-        unsafe { std::mem::transmute(num) }
+        match num {
+            0 => AuthResult::Ok,
+            1 => AuthResult::Failed,
+            _ => panic!("Invalid AuthResult value: {num}"),
+        }
     }
 }
 

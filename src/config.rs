@@ -2,7 +2,7 @@ use crate::VncError;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// All supported vnc encodings
-#[allow(dead_code)]
+// #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum VncEncoding {
@@ -20,7 +20,19 @@ pub enum VncEncoding {
 
 impl From<u32> for VncEncoding {
     fn from(num: u32) -> Self {
-        unsafe { std::mem::transmute(num) }
+        match num {
+            0 => VncEncoding::Raw,
+            1 => VncEncoding::CopyRect,
+            // 2 => VncEncoding::Rre,
+            // 5 => VncEncoding::Hextile,
+            7 => VncEncoding::Tight,
+            15 => VncEncoding::Trle,
+            16 => VncEncoding::Zrle,
+            val if val == -239i32 as u32 => VncEncoding::CursorPseudo,
+            val if val == -223i32 as u32 => VncEncoding::DesktopSizePseudo,
+            val if val == -224i32 as u32 => VncEncoding::LastRectPseudo,
+            _ => panic!("Unknown encoding: {num}"),
+        }
     }
 }
 
