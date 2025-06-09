@@ -2,6 +2,35 @@ use super::security;
 use crate::{VncError, VncVersion};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// Credentials for VNC authentication
+#[derive(Debug, Default, Clone)]
+pub struct Credentials {
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl Credentials {
+    /// Create credentials with no authentication
+    pub fn new(username: Option<String>, password: Option<String>) -> Self {
+        Self { username, password }
+    }
+
+    /// Get password reference if available
+    pub fn get_password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
+    /// Get username reference if available
+    pub fn get_username(&self) -> Option<&str> {
+        self.username.as_deref()
+    }
+
+    /// Check if credentials have any authentication info
+    pub fn is_none(&self) -> bool {
+        self.username.is_none() && self.password.is_none()
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -130,18 +159,18 @@ pub(super) struct AuthHelper {
 }
 
 impl AuthHelper {
-    pub(super) async fn read<S>(reader: &mut S, credential: &str) -> Result<Self, VncError>
+    pub(super) async fn read<S>(reader: &mut S, password: &str) -> Result<Self, VncError>
     where
         S: AsyncRead + Unpin,
     {
         let mut challenge = [0; 16];
         reader.read_exact(&mut challenge).await?;
 
-        let credential_len = credential.len();
+        let credential_len = password.len();
         let mut key = [0u8; 8];
         for (i, key_i) in key.iter_mut().enumerate() {
             let c = if i < credential_len {
-                credential.as_bytes()[i]
+                password.as_bytes()[i]
             } else {
                 0
             };

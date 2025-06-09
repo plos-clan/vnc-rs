@@ -18,9 +18,9 @@ name = "vnc-rs"
 
 [dependencies]
 vnc-rs = { path="../" }
-#error
 thiserror = "^1.0"
 anyhow = "^1.0"
+argh = "0.1.13"
 
 #log
 tracing = { version = "^0.1", features = ["log"] }
@@ -31,7 +31,6 @@ tokio = { version = "^1", features = ["full"] }
 
 # x11
 minifb = "0.23.0"
-
 
 [profile.release]
 # Tell `rustc` to optimize for small code size.

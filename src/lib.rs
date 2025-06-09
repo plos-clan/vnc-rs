@@ -10,7 +10,7 @@
 //! use minifb::{Window, WindowOptions};
 //! use tokio::{self, net::TcpStream};
 //! use tracing::Level;
-//! use vnc::{PixelFormat, Rect, VncConnector, VncEvent, X11Event};
+//! use vnc::{Credentials, PixelFormat, Rect, VncConnector, VncEvent, X11Event};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
@@ -28,7 +28,7 @@
 //!
 //!     let tcp = TcpStream::connect("127.0.0.1:5900").await?;
 //!     let vnc = VncConnector::new(tcp)
-//!         .set_auth_method(async move { Ok("123".to_string()) })
+//!         .set_credentials(Credentials::password("123".to_string()))
 //!         .add_encoding(vnc::VncEncoding::Tight)
 //!         .add_encoding(vnc::VncEncoding::Zrle)
 //!         .add_encoding(vnc::VncEncoding::CopyRect)
@@ -213,6 +213,7 @@ pub mod config;
 pub mod error;
 pub mod event;
 
+pub use client::Credentials;
 pub use client::VncClient;
 pub use client::VncConnector;
 pub use config::*;

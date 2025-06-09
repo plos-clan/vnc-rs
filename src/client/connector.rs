@@ -1,37 +1,35 @@
 use super::{
-    auth::{AuthHelper, AuthResult, SecurityType},
+    auth::{AuthHelper, AuthResult, Credentials, SecurityType},
     connection::VncClient,
+    security::vencrypt::{VeNCryptAuth, VncStream},
 };
-use std::future::Future;
-use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{info, trace};
 
 use crate::{PixelFormat, VncEncoding, VncError, VncVersion};
 
-pub enum VncState<S, F>
+pub enum VncState<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
-    F: Future<Output = Result<String, VncError>> + Send + Sync + 'static,
 {
-    Handshake(VncConnector<S, F>),
-    Authenticate(VncConnector<S, F>),
+    Handshake(VncConnector<S>),
+    Authenticate(VncConnector<S>),
     Connected(VncClient),
 }
 
-impl<S, F> VncState<S, F>
+impl<S> VncState<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
-    F: Future<Output = Result<String, VncError>> + Send + Sync + 'static,
 {
-    pub fn try_start(
-        self,
-    ) -> Pin<Box<dyn Future<Output = Result<Self, VncError>> + Send + Sync + 'static>> {
-        Box::pin(async move {
-            match self {
+    pub async fn try_start(mut self) -> Result<Self, VncError> {
+        loop {
+            self = match self {
                 VncState::Handshake(mut connector) => {
                     // Read the rfbversion informed by the server
-                    let rfbversion = VncVersion::read(&mut connector.stream).await?;
+                    let rfbversion = match &mut connector.stream {
+                        VncStream::Plain(stream) => VncVersion::read(stream).await?,
+                        VncStream::Tls(stream) => VncVersion::read(stream).await?,
+                    };
                     trace!(
                         "Our version {:?}, server version {:?}",
                         connector.rfb_version,
@@ -46,17 +44,17 @@ where
                     // Record the negotiated rfbversion
                     connector.rfb_version = rfbversion;
                     trace!("Negotiated rfb version: {:?}", rfbversion);
-                    rfbversion.write(&mut connector.stream).await?;
-                    Ok(VncState::Authenticate(connector).try_start().await?)
+                    match &mut connector.stream {
+                        VncStream::Plain(stream) => rfbversion.write(stream).await?,
+                        VncStream::Tls(stream) => rfbversion.write(stream).await?,
+                    };
+                    VncState::Authenticate(connector)
                 }
                 VncState::Authenticate(mut connector) => {
-                    let security_types =
-                        SecurityType::read(&mut connector.stream, &connector.rfb_version).await?;
-
-                    info!(
-                        "Server supported security types: {:?}",
-                        security_types
-                    );
+                    let security_types = match &mut connector.stream {
+                        VncStream::Plain(stream) => SecurityType::read(stream, &connector.rfb_version).await?,
+                        VncStream::Tls(stream) => SecurityType::read(stream, &connector.rfb_version).await?,
+                    };
 
                     assert!(!security_types.is_empty());
 
@@ -73,20 +71,82 @@ where
                                 // authentication, the server does not send the SecurityResult message
                                 // but proceeds directly to the initialization messages (Section 7.3).
                                 info!("No auth needed in vnc3.7");
-                                SecurityType::write(&SecurityType::None, &mut connector.stream)
-                                    .await?;
+                                match &mut connector.stream {
+                                    VncStream::Plain(stream) => SecurityType::write(&SecurityType::None, stream).await?,
+                                    VncStream::Tls(stream) => SecurityType::write(&SecurityType::None, stream).await?,
+                                };
                             }
                             VncVersion::RFB38 => {
                                 info!("No auth needed in vnc3.8");
-                                SecurityType::write(&SecurityType::None, &mut connector.stream)
-                                    .await?;
-                                let mut ok = [0; 4];
-                                connector.stream.read_exact(&mut ok).await?;
+                                match &mut connector.stream {
+                                    VncStream::Plain(stream) => {
+                                        SecurityType::write(&SecurityType::None, stream).await?;
+                                        let mut ok = [0; 4];
+                                        stream.read_exact(&mut ok).await?;
+                                    },
+                                    VncStream::Tls(stream) => {
+                                        SecurityType::write(&SecurityType::None, stream).await?;
+                                        let mut ok = [0; 4];
+                                        stream.read_exact(&mut ok).await?;
+                                    },
+                                }
                             }
                         }
                     } else {
                         // choose a auth method
-                        if security_types.contains(&SecurityType::VncAuth) {
+                        if security_types.contains(&SecurityType::VeNCrypt) {
+                            // Handle VeNCrypt authentication (preferred)
+                            if connector.rfb_version != VncVersion::RFB33 {
+                                match &mut connector.stream {
+                                    VncStream::Plain(stream) => SecurityType::write(&SecurityType::VeNCrypt, stream).await?,
+                                    VncStream::Tls(stream) => SecurityType::write(&SecurityType::VeNCrypt, stream).await?,
+                                };
+                            }
+                            
+                            // Get credentials
+                            if connector.credentials.get_password().is_none() {
+                                return Err(VncError::NoPassword);
+                            }
+                            
+                            let password = connector.credentials.get_password().unwrap().to_string();
+                            let username = connector.credentials.get_username().unwrap_or("").to_string();
+                            
+                            // Perform VeNCrypt authentication
+                            let stream = connector.stream;
+                            let plain_stream = match stream {
+                                VncStream::Plain(s) => s,
+                                VncStream::Tls(_) => return Err(VncError::General("Unexpected TLS stream".to_string())),
+                            };
+                            connector.stream = VeNCryptAuth::authenticate(
+                                plain_stream,
+                                "localhost",
+                                Some(username.as_ref()),
+                                Some(&password),
+                            ).await?;
+                            
+                            // Read SecurityResult after VeNCrypt auth
+                            let result = match &mut connector.stream {
+                                VncStream::Plain(stream) => stream.read_u32().await?,
+                                VncStream::Tls(stream) => stream.read_u32().await?,
+                            };
+                            let auth_result: AuthResult = result.into();
+                            if let AuthResult::Failed = auth_result {
+                                match &mut connector.stream {
+                                    VncStream::Plain(stream) => {
+                                        let _ = stream.read_u32().await?;
+                                        let mut err_msg = String::new();
+                                        stream.read_to_string(&mut err_msg).await?;
+                                        return Err(VncError::General(err_msg));
+                                    },
+                                    VncStream::Tls(stream) => {
+                                        let _ = stream.read_u32().await?;
+                                        let mut err_msg = String::new();
+                                        stream.read_to_string(&mut err_msg).await?;
+                                        return Err(VncError::General(err_msg));
+                                    },
+                                };
+                            }
+                        } else if security_types.contains(&SecurityType::VncAuth) {
                             if connector.rfb_version != VncVersion::RFB33 {
                                 // In the security handshake (Section 7.1.2), rather than a two-way
                                 // negotiation, the server decides the security type and sends a single
@@ -101,54 +161,81 @@ where
                                 // The security-type may only take the value 0, 1, or 2.  A value of 0
                                 // means that the connection has failed and is followed by a string
                                 // giving the reason, as described in Section 7.1.2.
-                                SecurityType::write(&SecurityType::VncAuth, &mut connector.stream)
-                                    .await?;
+                                match &mut connector.stream {
+                                    VncStream::Plain(stream) => SecurityType::write(&SecurityType::VncAuth, stream).await?,
+                                    VncStream::Tls(stream) => SecurityType::write(&SecurityType::VncAuth, stream).await?,
+                                };
                             }
+                            
+                            // get credentials
+                            if connector.credentials.get_password().is_none() {
+                                return Err(VncError::NoPassword);
+                            }
+
+                            let password = connector.credentials.get_password().unwrap();
+
+                            // auth
+                            match &mut connector.stream {
+                                VncStream::Plain(stream) => {
+                                    let auth = AuthHelper::read(stream, &password).await?;
+                                    auth.write(stream).await?;
+                                    let result = auth.finish(stream).await?;
+                                    if let AuthResult::Failed = result {
+                                        if let VncVersion::RFB37 = connector.rfb_version {
+                                            return Err(VncError::WrongPassword);
+                                        } else {
+                                            let _ = stream.read_u32().await?;
+                                            let mut err_msg = String::new();
+                                            stream.read_to_string(&mut err_msg).await?;
+                                            return Err(VncError::General(err_msg));
+                                        }
+                                    }
+                                },
+                                VncStream::Tls(stream) => {
+                                    let auth = AuthHelper::read(stream, &password).await?;
+                                    auth.write(stream).await?;
+                                    let result = auth.finish(stream).await?;
+                                    if let AuthResult::Failed = result {
+                                        if let VncVersion::RFB37 = connector.rfb_version {
+                                            return Err(VncError::WrongPassword);
+                                        } else {
+                                            let _ = stream.read_u32().await?;
+                                            let mut err_msg = String::new();
+                                            stream.read_to_string(&mut err_msg).await?;
+                                            return Err(VncError::General(err_msg));
+                                        }
+                                    }
+                                },
+                            };
                         } else {
-                            let msg = "Security type apart from Vnc Auth has not been implemented";
+                            let msg = "Security type apart from Vnc Auth and VeNCrypt has not been implemented";
                             return Err(VncError::General(msg.to_owned()));
-                        }
-
-                        // get password
-                        if connector.auth_methond.is_none() {
-                            return Err(VncError::NoPassword);
-                        }
-
-                        let credential = (connector.auth_methond.take().unwrap()).await?;
-
-                        // auth
-                        let auth = AuthHelper::read(&mut connector.stream, &credential).await?;
-                        auth.write(&mut connector.stream).await?;
-                        let result = auth.finish(&mut connector.stream).await?;
-                        if let AuthResult::Failed = result {
-                            if let VncVersion::RFB37 = connector.rfb_version {
-                                // In VNC Authentication (Section 7.2.2), if the authentication fails,
-                                // the server sends the SecurityResult message, but does not send an
-                                // error message before closing the connection.
-                                return Err(VncError::WrongPassword);
-                            } else {
-                                let _ = connector.stream.read_u32().await?;
-                                let mut err_msg = String::new();
-                                connector.stream.read_to_string(&mut err_msg).await?;
-                                return Err(VncError::General(err_msg));
-                            }
                         }
                     }
                     info!("Auth done, client connected");
 
-                    Ok(VncState::Connected(
-                        VncClient::new(
-                            connector.stream,
-                            connector.allow_shared,
-                            connector.pixel_format,
-                            connector.encodings,
-                        )
-                        .await?,
-                    ))
+                    return Ok(VncState::Connected(
+                        match connector.stream {
+                            VncStream::Plain(stream) => VncClient::new(
+                                stream,
+                                connector.allow_shared,
+                                connector.pixel_format,
+                                connector.encodings,
+                            ).await?,
+                            VncStream::Tls(stream) => VncClient::new(
+                                stream,
+                                connector.allow_shared,
+                                connector.pixel_format,
+                                connector.encodings,
+                            ).await?,
+                        }
+                    ));
                 }
-                _ => unreachable!(),
-            }
-        })
+                VncState::Connected(_) => {
+                    return Ok(self);
+                }
+            };
+        }
     }
 
     pub fn finish(self) -> Result<VncClient, VncError> {
@@ -161,23 +248,21 @@ where
 }
 
 /// Connection Builder to setup a vnc client
-pub struct VncConnector<S, F>
+pub struct VncConnector<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    F: Future<Output = Result<String, VncError>> + Send + Sync + 'static,
 {
-    stream: S,
-    auth_methond: Option<F>,
+    stream: VncStream<S>,
+    credentials: crate::client::auth::Credentials,
     rfb_version: VncVersion,
     allow_shared: bool,
     pixel_format: Option<PixelFormat>,
     encodings: Vec<VncEncoding>,
 }
 
-impl<S, F> VncConnector<S, F>
+impl<S> VncConnector<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
-    F: Future<Output = Result<String, VncError>> + Send + Sync + 'static,
 {
     /// To new a vnc client configuration with stream `S`
     ///
@@ -191,7 +276,7 @@ where
     /// async fn main() -> Result<(), VncError> {
     ///     let tcp = TcpStream::connect("127.0.0.1:5900").await?;
     ///     let vnc = VncConnector::new(tcp)
-    ///         .set_auth_method(async move { Ok("password".to_string()) })
+    ///         .set_credentials(vnc::Credentials::password("password".to_string()))
     ///         .add_encoding(vnc::VncEncoding::Tight)
     ///         .add_encoding(vnc::VncEncoding::Zrle)
     ///         .add_encoding(vnc::VncEncoding::CopyRect)
@@ -208,8 +293,8 @@ where
     ///
     pub fn new(stream: S) -> Self {
         Self {
-            stream,
-            auth_methond: None,
+            stream: VncStream::Plain(stream),
+            credentials: Credentials::default(),
             allow_shared: true,
             rfb_version: VncVersion::RFB38,
             pixel_format: None,
@@ -217,47 +302,26 @@ where
         }
     }
 
-    /// An async callback which is used to query credentials if the vnc server has set
+    /// Set credentials for VNC authentication
     ///
     /// ```no_compile
-    /// connector = connector.set_auth_method(async move { Ok("password".to_string()) })
+    ///         .set_credentials(Credentials::password("password".to_string()))
     /// ```
     ///
-    /// if you're building a wasm app,
-    /// the async callback also allows you to combine it to a promise
+    /// For username and password authentication:
     ///
     /// ```no_compile
-    /// #[wasm_bindgen]
-    /// extern "C" {
-    ///     fn get_password() -> js_sys::Promise;
-    /// }
-    ///
-    /// connector = connector
-    ///        .set_auth_method(async move {
-    ///            let auth = JsFuture::from(get_password()).await.unwrap();
-    ///            Ok(auth.as_string().unwrap())
-    ///     });
+    ///         .set_credentials(Credentials::user_password("user".to_string(), "password".to_string()))
     /// ```
     ///
-    /// While in the js code
+    /// For no authentication:
     ///
-    ///
-    /// ```javascript
-    /// var password = '';
-    /// function get_password() {
-    ///     return new Promise((reslove, reject) => {
-    ///        document.getElementById("submit_password").addEventListener("click", () => {
-    ///             password = window.document.getElementById("input_password").value
-    ///             reslove(password)
-    ///         })
-    ///     });
-    /// }
+    /// ```no_compile
+    ///         .set_credentials(Credentials::none())
     /// ```
     ///
-    /// The future won't be polled if the sever doesn't apply any password protections to the session
-    ///
-    pub fn set_auth_method(mut self, auth_callback: F) -> Self {
-        self.auth_methond = Some(auth_callback);
+    pub fn set_credentials(mut self, credentials: Credentials) -> Self {
+        self.credentials = credentials;
         self
     }
 
@@ -315,7 +379,7 @@ where
 
     /// Complete the client configuration
     ///
-    pub fn build(self) -> Result<VncState<S, F>, VncError> {
+    pub fn build(self) -> Result<VncState<S>, VncError> {
         if self.encodings.is_empty() {
             return Err(VncError::NoEncoding);
         }

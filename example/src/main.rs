@@ -1,8 +1,26 @@
 use anyhow::{Context, Result};
+use argh::FromArgs;
 use minifb::{Window, WindowOptions};
 use tokio::{self, net::TcpStream};
 use tracing::Level;
-use vnc::{PixelFormat, Rect, VncConnector, VncEvent, X11Event};
+use vnc::{Credentials, PixelFormat, Rect, VncConnector, VncEncoding, VncEvent, X11Event};
+
+#[derive(FromArgs)]
+#[argh(description = "A simple VNC client written in Rust")]
+struct Args {
+    #[argh(option, short = 'h')]
+    #[argh(default = "String::from(\"127.0.0.1:5900\")")]
+    #[argh(description = "VNC server host and port")]
+    host: String,
+
+    #[argh(option, short = 'u')]
+    #[argh(description = "username for authentication")]
+    username: Option<String>,
+
+    #[argh(option, short = 'p')]
+    #[argh(description = "password for authentication")]
+    password: Option<String>,
+}
 
 struct CanvasUtils {
     window: Window,
@@ -130,26 +148,32 @@ impl CanvasUtils {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Create tracing subscriber
-    #[cfg(debug_assertions)]
+    let level = if cfg!(debug_assertions) {
+        Level::TRACE
+    } else {
+        Level::INFO
+    };
+
     let subscriber = tracing_subscriber::fmt()
         .pretty()
-        .with_max_level(Level::TRACE)
-        .finish();
-    #[cfg(not(debug_assertions))]
-    let subscriber = tracing_subscriber::fmt()
-        .pretty()
-        .with_max_level(Level::INFO)
+        .with_max_level(level)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("failed to setting default subscriber");
 
-    let tcp = TcpStream::connect("127.0.0.1:5900").await?;
+    // Parse command line arguments manually
+    let args: Args = argh::from_env();
+
+    println!("Connecting to VNC server at {}", args.host);
+
+    let tcp = TcpStream::connect(&args.host).await?;
     let vnc = VncConnector::new(tcp)
-        .set_auth_method(async move { Ok("123".to_string()) })
-        .add_encoding(vnc::VncEncoding::Tight)
-        .add_encoding(vnc::VncEncoding::Zrle)
-        .add_encoding(vnc::VncEncoding::CopyRect)
-        .add_encoding(vnc::VncEncoding::Raw)
+        .set_credentials(Credentials::new(args.username, args.password))
+        .add_encoding(VncEncoding::Tight)
+        .add_encoding(VncEncoding::Zrle)
+        .add_encoding(VncEncoding::CopyRect)
+        .add_encoding(VncEncoding::Raw)
         .allow_shared(true)
         .set_pixel_format(PixelFormat::bgra())
         .build()?
