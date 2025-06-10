@@ -21,6 +21,8 @@ path = "src/lib.rs"
 
 [[example]]
 name = "vncviewer"
+[[example]]
+name = "vncviewer_winit"
 
 [profile.release]
 opt-level = 3
@@ -55,3 +57,13 @@ anyhow = "1"
 argh = "0.1.13"
 minifb = "0.28.0"
 tracing-subscriber = { version = "0.3" }
+
+[dev-dependencies.winit]
+version = "0.30.10"
+features = ["rwh_06", "x11", "wayland"]
+default-features = false
+
+[dev-dependencies.softbuffer]
+version = "0.4.6"
+features = ["x11", "wayland"]
+default-features = false

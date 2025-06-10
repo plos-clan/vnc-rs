@@ -13,6 +13,12 @@ pub enum VncEncoding {
     LastRectPseudo = -224,
 }
 
+impl From<VncEncoding> for u32 {
+    fn from(e: VncEncoding) -> Self {
+        e as u32
+    }
+}
+
 impl From<u32> for VncEncoding {
     fn from(num: u32) -> Self {
         match num {
@@ -28,11 +34,5 @@ impl From<u32> for VncEncoding {
             val if val == -224i32 as u32 => VncEncoding::LastRectPseudo,
             _ => panic!("Unknown encoding: {num}"),
         }
-    }
-}
-
-impl From<VncEncoding> for u32 {
-    fn from(e: VncEncoding) -> Self {
-        e as u32
     }
 }

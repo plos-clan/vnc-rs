@@ -4,7 +4,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum VncError {
     #[error("Auth is required but no password provided")]
-    NoPassword,
+    MisingPassword,
     #[error("No VNC encoding selected")]
     NoEncoding,
     #[error("Unknow VNC security type: {0}")]

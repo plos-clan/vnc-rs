@@ -28,7 +28,7 @@ struct Args {
 
 struct CanvasUtils {
     window: Window,
-    video: Vec<u32>,
+    buffer: Vec<u32>,
     width: u32,
     height: u32,
 }
@@ -36,14 +36,9 @@ struct CanvasUtils {
 impl CanvasUtils {
     fn new() -> Result<Self> {
         Ok(Self {
-            window: Window::new(
-                "vncviewer",
-                800_usize,
-                600_usize,
-                WindowOptions::default(),
-            )
-            .with_context(|| "Unable to create window".to_string())?,
-            video: vec![],
+            window: Window::new("vncviewer", 800_usize, 600_usize, WindowOptions::default())
+                .with_context(|| "Unable to create window".to_string())?,
+            buffer: vec![],
             width: 800,
             height: 600,
         })
@@ -61,7 +56,7 @@ impl CanvasUtils {
         self.window = window;
         self.width = width;
         self.height = height;
-        self.video.resize(height as usize * width as usize, 0);
+        self.buffer.resize(height as usize * width as usize, 0);
         Ok(())
     }
 
@@ -74,7 +69,7 @@ impl CanvasUtils {
             let mut d_idx = y as usize * self.width as usize + rect.x as usize;
 
             for _ in rect.x..rect.x + rect.width {
-                self.video[d_idx] =
+                self.buffer[d_idx] =
                     u32::from_le_bytes(data[s_idx..s_idx + 4].try_into().unwrap()) & 0x00_ff_ff_ff;
                 s_idx += 4;
                 d_idx += 1;
@@ -85,7 +80,7 @@ impl CanvasUtils {
 
     fn flush(&mut self) -> Result<()> {
         self.window
-            .update_with_buffer(&self.video, self.width as usize, self.height as usize)
+            .update_with_buffer(&self.buffer, self.width as usize, self.height as usize)
             .with_context(|| "Unable to update screen buffer")?;
         Ok(())
     }
@@ -97,7 +92,7 @@ impl CanvasUtils {
         for y in 0..src.height as usize {
             let mut s_idx = (src.y as usize + y) * self.width as usize + src.x as usize;
             for _ in 0..src.width {
-                tmp[tmp_idx] = self.video[s_idx];
+                tmp[tmp_idx] = self.buffer[s_idx];
                 tmp_idx += 1;
                 s_idx += 1;
             }
@@ -106,7 +101,7 @@ impl CanvasUtils {
         for y in 0..src.height as usize {
             let mut d_idx = (dst.y as usize + y) * self.width as usize + dst.x as usize;
             for _ in 0..src.width {
-                self.video[d_idx] = tmp[tmp_idx];
+                self.buffer[d_idx] = tmp[tmp_idx];
                 tmp_idx += 1;
                 d_idx += 1;
             }
@@ -251,10 +246,10 @@ fn minifb_key_to_x11_keysym(key: Key) -> Option<u32> {
         Key::RightShift => Some(0xffe2), // XK_Shift_R
         Key::LeftCtrl => Some(0xffe3),   // XK_Control_L
         Key::RightCtrl => Some(0xffe4),  // XK_Control_R
-        Key::LeftAlt => Some(0xffe9),    // XK_Alt_L
-        Key::RightAlt => Some(0xffea),   // XK_Alt_R
         Key::LeftSuper => Some(0xffeb),  // XK_Super_L
         Key::RightSuper => Some(0xffec), // XK_Super_R
+        Key::LeftAlt => Some(0xffe9),    // XK_Alt_L
+        Key::RightAlt => Some(0xffea),   // XK_Alt_R
 
         // Numeric keypad
         Key::NumPad0 => Some(0xffb0),        // XK_KP_0
@@ -444,7 +439,7 @@ async fn main() -> Result<()> {
             now = std::time::Instant::now();
         }
     }
-    
+
     let _ = vnc.close().await;
     Ok(())
 }

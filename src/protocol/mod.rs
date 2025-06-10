@@ -6,7 +6,7 @@ pub mod security;
 pub mod version;
 
 pub use encoding::VncEncoding;
+pub use messages::{ClientMsg, ServerMsg};
 pub use pixel_format::PixelFormat;
 pub use rect::{Rect, Screen};
 pub use version::VncVersion;
-pub use messages::{ClientMsg, ServerMsg};

@@ -1,10 +1,10 @@
 use crate::VncError;
+use rustls::client::danger::{ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, Error as TlsError, SignatureScheme};
-use rustls::pki_types::{ServerName, CertificateDer, UnixTime};
-use rustls::client::danger::{ServerCertVerifier, ServerCertVerified};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio_rustls::{TlsConnector, client::TlsStream as ClientTlsStream};
+use tokio_rustls::{client::TlsStream as ClientTlsStream, TlsConnector};
 
 #[derive(Debug)]
 struct AcceptAllVerifier;
@@ -91,7 +91,9 @@ impl TryFrom<u32> for VeNCryptSubtype {
             262 => Ok(VeNCryptSubtype::X509Plain),
             263 => Ok(VeNCryptSubtype::TlsSasl),
             264 => Ok(VeNCryptSubtype::X509Sasl),
-            _ => Err(VncError::General(format!("Unsupported VeNCrypt subtype: {value}"))),
+            _ => Err(VncError::General(format!(
+                "Unsupported VeNCrypt subtype: {value}"
+            ))),
         }
     }
 }
@@ -185,8 +187,6 @@ where
     }
 }
 
-
-
 /// VeNCrypt authentication handler
 pub struct VeNCryptAuth;
 
@@ -199,7 +199,7 @@ impl VeNCryptAuth {
         // Read server's VeNCrypt version
         let server_major = stream.read_u8().await?;
         let server_minor = stream.read_u8().await?;
-        
+
         debug!("Server VeNCrypt version: {}.{}", server_major, server_minor);
 
         // We only support version 0.2
@@ -212,8 +212,12 @@ impl VeNCryptAuth {
         // Send our supported version (0.2)
         stream.write_u8(VENCRYPT_VERSION.0).await?;
         stream.write_u8(VENCRYPT_VERSION.1).await?;
-        
-        trace!("Sent VeNCrypt version: {}.{}", VENCRYPT_VERSION.0, VENCRYPT_VERSION.1);
+
+        trace!(
+            "Sent VeNCrypt version: {}.{}",
+            VENCRYPT_VERSION.0,
+            VENCRYPT_VERSION.1
+        );
 
         // Read server's response (should be 0 for OK)
         let response = stream.read_u8().await?;
@@ -237,7 +241,9 @@ impl VeNCryptAuth {
         debug!("Server supports {} VeNCrypt subtypes", num_subtypes);
 
         if num_subtypes == 0 {
-            return Err(VncError::General("Server supports no VeNCrypt subtypes".to_string()));
+            return Err(VncError::General(
+                "Server supports no VeNCrypt subtypes".to_string(),
+            ));
         }
 
         // Read supported subtypes
@@ -290,7 +296,11 @@ impl VeNCryptAuth {
     }
 
     /// Setup TLS connection if required by the selected subtype
-    async fn setup_tls<S>(stream: S, subtype: VeNCryptSubtype, server_name: &str) -> Result<VncStream<S>, VncError>
+    async fn setup_tls<S>(
+        stream: S,
+        subtype: VeNCryptSubtype,
+        server_name: &str,
+    ) -> Result<VncStream<S>, VncError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -298,7 +308,10 @@ impl VeNCryptAuth {
             return Ok(VncStream::Plain(stream));
         }
 
-        info!("Setting up TLS connection for VeNCrypt subtype: {:?}", subtype);
+        info!(
+            "Setting up TLS connection for VeNCrypt subtype: {:?}",
+            subtype
+        );
 
         // Configure TLS client with custom verifier for VNC self-signed certificates
         let config = ClientConfig::builder()
@@ -307,13 +320,13 @@ impl VeNCryptAuth {
             .with_no_client_auth();
 
         let connector = TlsConnector::from(Arc::new(config));
-        
+
         // Parse server name for TLS
         let server_name = ServerName::try_from(server_name.to_string())
             .map_err(|e| VncError::General(format!("Invalid server name: {e}")))?;
 
         info!("Starting TLS handshake");
-        
+
         // Perform TLS handshake
         let tls_stream = connector
             .connect(server_name, stream)
@@ -383,7 +396,7 @@ impl VeNCryptAuth {
                 let password = password.ok_or_else(|| {
                     VncError::General("Password required for Plain authentication".to_string())
                 })?;
-                
+
                 Self::authenticate_plain(&mut stream, username, password).await?;
             }
             VeNCryptSubtype::TlsNone | VeNCryptSubtype::X509None => {

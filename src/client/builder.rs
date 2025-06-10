@@ -23,6 +23,7 @@ where
     pub async fn try_start(mut self) -> Result<Self, VncError> {
         loop {
             self = match self {
+                VncState::Connected(_) => return Ok(self),
                 VncState::Handshake(mut connector) => {
                     // Read the rfbversion informed by the server
                     let rfbversion = match &mut connector.stream {
@@ -34,15 +35,11 @@ where
                         connector.rfb_version,
                         rfbversion
                     );
-                    let rfbversion = if connector.rfb_version < rfbversion {
-                        connector.rfb_version
-                    } else {
-                        rfbversion
-                    };
 
                     // Record the negotiated rfbversion
-                    connector.rfb_version = rfbversion;
-                    trace!("Negotiated rfb version: {:?}", rfbversion);
+                    connector.rfb_version = connector.rfb_version.min(rfbversion);
+                    trace!("Negotiated rfb version: {:?}", connector.rfb_version);
+
                     match &mut connector.stream {
                         VncStream::Plain(stream) => rfbversion.write(stream).await?,
                         VncStream::Tls(stream) => rfbversion.write(stream).await?,
@@ -64,15 +61,9 @@ where
                     if security_types.contains(&SecurityType::None) {
                         match connector.rfb_version {
                             VncVersion::RFB33 => {
-                                // If the security-type is 1, for no authentication, the server does not
-                                // send the SecurityResult message but proceeds directly to the
-                                // initialization messages (Section 7.3).
                                 info!("No auth needed in vnc3.3");
                             }
                             VncVersion::RFB37 => {
-                                // After the security handshake, if the security-type is 1, for no
-                                // authentication, the server does not send the SecurityResult message
-                                // but proceeds directly to the initialization messages (Section 7.3).
                                 info!("No auth needed in vnc3.7");
                                 match &mut connector.stream {
                                     VncStream::Plain(stream) => {
@@ -114,17 +105,14 @@ where
                                 };
                             }
 
-                            // Get credentials
-                            if connector.credentials.get_password().is_none() {
-                                return Err(VncError::NoPassword);
-                            }
+                            let Some(password) = connector.credentials.password else {
+                                return Err(VncError::MisingPassword);
+                            };
 
-                            let password =
-                                connector.credentials.get_password().unwrap().to_string();
                             let username = connector
                                 .credentials
-                                .get_username()
-                                .unwrap_or("")
+                                .username
+                                .unwrap_or(String::default())
                                 .to_string();
 
                             // Perform VeNCrypt authentication
@@ -169,19 +157,6 @@ where
                             }
                         } else if security_types.contains(&SecurityType::VncAuth) {
                             if connector.rfb_version != VncVersion::RFB33 {
-                                // In the security handshake (Section 7.1.2), rather than a two-way
-                                // negotiation, the server decides the security type and sends a single
-                                // word:
-
-                                //            +--------------+--------------+---------------+
-                                //            | No. of bytes | Type [Value] | Description   |
-                                //            +--------------+--------------+---------------+
-                                //            | 4            | U32          | security-type |
-                                //            +--------------+--------------+---------------+
-
-                                // The security-type may only take the value 0, 1, or 2.  A value of 0
-                                // means that the connection has failed and is followed by a string
-                                // giving the reason, as described in Section 7.1.2.
                                 match &mut connector.stream {
                                     VncStream::Plain(stream) => {
                                         SecurityType::write(&SecurityType::VncAuth, stream).await?
@@ -192,12 +167,9 @@ where
                                 };
                             }
 
-                            // get credentials
-                            if connector.credentials.get_password().is_none() {
-                                return Err(VncError::NoPassword);
-                            }
-
-                            let password = connector.credentials.get_password().unwrap();
+                            let Some(password) = &connector.credentials.password else {
+                                return Err(VncError::MisingPassword);
+                            };
 
                             // auth
                             match &mut connector.stream {
@@ -233,45 +205,32 @@ where
                                 }
                             };
                         } else {
-                            let msg = "Security type apart from Vnc Auth and VeNCrypt has not been implemented";
-                            return Err(VncError::General(msg.to_owned()));
+                            return Err(VncError::General(format!(
+                                "Security types {:?} not supported",
+                                security_types
+                            )));
                         }
                     }
                     info!("Auth done, client connected");
 
-                    return Ok(VncState::Connected(match connector.stream {
-                        VncStream::Plain(stream) => {
-                            VncClient::new(
-                                stream,
-                                connector.allow_shared,
-                                connector.pixel_format,
-                                connector.encodings,
-                            )
-                            .await?
-                        }
-                        VncStream::Tls(stream) => {
-                            VncClient::new(
-                                stream,
-                                connector.allow_shared,
-                                connector.pixel_format,
-                                connector.encodings,
-                            )
-                            .await?
-                        }
-                    }));
-                }
-                VncState::Connected(_) => {
-                    return Ok(self);
+                    return Ok(VncState::Connected(
+                        VncClient::new(
+                            connector.stream,
+                            connector.allow_shared,
+                            connector.pixel_format,
+                            connector.encodings,
+                        )
+                        .await?,
+                    ));
                 }
             };
         }
     }
 
     pub fn finish(self) -> Result<VncClient, VncError> {
-        if let VncState::Connected(client) = self {
-            Ok(client)
-        } else {
-            Err(VncError::ConnectError)
+        match self {
+            VncState::Connected(client) => Ok(client),
+            _ => Err(VncError::ConnectError),
         }
     }
 }
@@ -332,23 +291,6 @@ where
     }
 
     /// Set credentials for VNC authentication
-    ///
-    /// ```no_compile
-    ///         .set_credentials(Credentials::new(None, Some("password".to_string())))
-    /// ```
-    ///
-    /// For username and password authentication:
-    ///
-    /// ```no_compile
-    ///         .set_credentials(Credentials::user_password("user".to_string(), "password".to_string()))
-    /// ```
-    ///
-    /// For no authentication:
-    ///
-    /// ```no_compile
-    ///         .set_credentials(Credentials::none())
-    /// ```
-    ///
     pub fn set_credentials(mut self, credentials: Credentials) -> Self {
         self.credentials = credentials;
         self

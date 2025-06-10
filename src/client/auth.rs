@@ -14,21 +14,6 @@ impl Credentials {
     pub fn new(username: Option<String>, password: Option<String>) -> Self {
         Self { username, password }
     }
-
-    /// Get password reference if available
-    pub fn get_password(&self) -> Option<&str> {
-        self.password.as_deref()
-    }
-
-    /// Get username reference if available
-    pub fn get_username(&self) -> Option<&str> {
-        self.username.as_deref()
-    }
-
-    /// Check if credentials have any authentication info
-    pub fn is_none(&self) -> bool {
-        self.username.is_none() && self.password.is_none()
-    }
 }
 
 pub(super) struct AuthHelper {

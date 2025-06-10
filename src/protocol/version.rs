@@ -2,12 +2,22 @@ use crate::VncError;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// All supported vnc versions
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
 #[repr(u8)]
 pub enum VncVersion {
     RFB33,
     RFB37,
     RFB38,
+}
+
+impl From<VncVersion> for &[u8; 12] {
+    fn from(version: VncVersion) -> Self {
+        match version {
+            VncVersion::RFB33 => b"RFB 003.003\n",
+            VncVersion::RFB37 => b"RFB 003.007\n",
+            VncVersion::RFB38 => b"RFB 003.008\n",
+        }
+    }
 }
 
 impl From<[u8; 12]> for VncVersion {
@@ -21,16 +31,6 @@ impl From<[u8; 12]> for VncVersion {
             //  but should be interpreted as 3.3 since they do not implement the
             //  different handshake in 3.7 or 3.8.
             _ => VncVersion::RFB33,
-        }
-    }
-}
-
-impl From<VncVersion> for &[u8; 12] {
-    fn from(version: VncVersion) -> Self {
-        match version {
-            VncVersion::RFB33 => b"RFB 003.003\n",
-            VncVersion::RFB37 => b"RFB 003.007\n",
-            VncVersion::RFB38 => b"RFB 003.008\n",
         }
     }
 }

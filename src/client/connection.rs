@@ -1,30 +1,25 @@
 use futures::TryStreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
+use std::io::{Error, ErrorKind};
 use std::{future::Future, sync::Arc, vec};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::{
-        mpsc::{
-            channel,
-            error::{TryRecvError, TrySendError},
-            Receiver, Sender,
-        },
-        oneshot, Mutex,
-    },
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{oneshot, Mutex};
 use tokio_util::compat::*;
 use tracing::*;
 
+use crate::protocol::{ClientMsg, ServerMsg};
 use crate::{codec, PixelFormat, Rect, VncEncoding, VncError, VncEvent, X11Event};
+
 const CHANNEL_SIZE: usize = 4096;
 
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::spawn;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local as spawn;
-
-use crate::protocol::{ClientMsg, ServerMsg};
 
 struct ImageRect {
     rect: Rect,
@@ -398,7 +393,6 @@ where
             ServerMsg::FramebufferUpdate(rect_num) => {
                 for _ in 0..rect_num {
                     let rect = ImageRect::read(stream).await?;
-                    // trace!("Encoding: {:?}", rect.encoding);
 
                     match rect.encoding {
                         VncEncoding::Raw => {
@@ -444,7 +438,6 @@ where
                     }
                 }
             }
-            // SetColorMapEntries,
             ServerMsg::Bell => {
                 output_func(VncEvent::Bell).await?;
             }
@@ -490,9 +483,6 @@ where
                                 Ok(()) => ()
                             }
                         } else {
-                            // According to the tokio's Doc
-                            // https://docs.rs/tokio/latest/tokio/io/trait.AsyncRead.html
-                            // if nread == 0, then EOF is reached
                             trace!("Net Connection EOF detected");
                             break;
                         }
@@ -511,7 +501,7 @@ where
 
     // notify the decoding thread
     let _ = conn_ch
-        .send(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+        .send(Err(Error::from(ErrorKind::UnexpectedEof)))
         .await;
 
     Ok(())
